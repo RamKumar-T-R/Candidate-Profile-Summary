@@ -3,86 +3,125 @@ import asyncio
 import json
 import logging
 import os
-
-from albumentations import Compose, LongestMaxSize, Normalize, PadIfNeeded
-from albumentations.pytorch import ToTensorV2
-import cv2
 import streamlit as st
-import torch
-import PIL
 import numpy as np
+import PyPDF2
+import google.generativeai as genai
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+import base64
+from streamlit_pdf_viewer import pdf_viewer
 
-class ClassifyModel:
-    def __init__(self):
-        self.model = None
-        self.class2tag = None
-        self.tag2class = None
-        self.transform = None
+# Connecting to the mongoDB
+uri = "mongodb+srv://Ramkumar:Ram%402004@ramcluster.c6j2p.mongodb.net/?retryWrites=true&w=majority&appName=RamCluster"
 
-    def load(self, path="/model"):
-        image_size = 512
-        self.transform = Compose(
-            [
-                LongestMaxSize(max_size=image_size),
-                PadIfNeeded(image_size, image_size, border_mode=cv2.BORDER_CONSTANT),
-                Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225), always_apply=True),
-                ToTensorV2()
-            ]
-        )
-        self.model = torch.jit.load("model_healthy_bot.pth")
-        with open("tag2class_healthy_bot.json") as fin:
-            self.tag2class = json.load(fin)
-            self.class2tag = {v: k for k, v in self.tag2class.items()}
-            logging.debug(f"class2tag: {self.class2tag}")
+# Create a new client and connect to the server
+client = MongoClient(uri, server_api=ServerApi('1'))
 
-    def predict(self, *imgs) -> List[str]:
-        logging.debug(f"batch size: {len(imgs)}")
-        input_ts = [self.transform(image=img)["image"] for img in imgs]
-        input_t = torch.stack(input_ts)
-        logging.debug(f"input_t: {input_t.shape}")
-        output_ts = self.model(input_t)
-        activation_fn = torch.nn.__dict__['Sigmoid']()
-        output_ts = activation_fn(output_ts)
-        labels = list(self.tag2class.keys())
-        logging.debug(f"output_ts: {output_ts.shape}")
-        #logging.debug(f"output_pb: {output_pb}")
-        res = []
-        trh = 0.5
-        for output_t in output_ts:
-            logit = (output_t > trh).long()
-            if logit[0] and any([*logit[1:3], *logit[4:]]): 
-                output_t[0] = 0
-            indices = (output_t > trh).nonzero(as_tuple=True)[0]
-            prob = output_t[indices].tolist()
-            tag  = [labels[i] for i in indices.tolist()]
-            res_dict = dict(zip(
-                         list(self.tag2class.keys()),list(output_t.numpy())
-                       ))
-            logging.debug(f"all results: {res_dict}")
-            logging.debug(f"prob: {prob}")
-            logging.debug(f"result: {tag}")
-            res.append((tag,prob,res_dict))
-        result = {k:v for k,v in res_dict.items() if k in ['healthy','leaf rust','stem rust']}
-        k,v=max(result.items(), key = lambda k : k[1])
-        return k,v
+# Send a ping to confirm a successful connection
+try:
+    client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB!")
+except Exception as e:
+    print(e)
 
-m = ClassifyModel()
-m.load()
+db = client.candidate
+profileData = db.profileData
 
 st.sidebar.title("About")
 
+
+# Retriving all the documents
+all_candidate_info = profileData.find()
+all_candidate_info = list(all_candidate_info)
+
 st.sidebar.info(
     "This application identifies the crop health in the picture.")
+st.sidebar.write("candidate_names")
+for data in all_candidate_info:
+    if st.sidebar.button(data.get('Name')):
+        candidate_pdf_file_bytes = base64.b64decode(data.get('resume'))
+
+        candidate_pdf_file = open('file.pdf', 'wb')
+        candidate_pdf_file.write(candidate_pdf_file_bytes)
+
+        st.download_button('Download pdf', candidate_pdf_file)
+        # container_pdf, container_chat = st.columns([50, 50])
+
+        # with container_pdf:
+
+        #     if candidate_pdf_file:
+        #         binary_data = candidate_pdf_file.getvalue()
+        #         pdf_viewer(input=binary_data,
+        #                 width=700)
+
+
 
 
 st.title('Wheat Rust Identification')
 
-st.write("Upload an image.")
-uploaded_file = st.file_uploader("")
+st.write("Upload your resume")
+uploaded_file = st.file_uploader("", type="pdf")
 
 if uploaded_file is not None:
-    image = PIL.Image.open(uploaded_file).resize((512,512))
-    img = np.array(image)
-    wheat_type,confidence = m.predict(img)
-    st.write(f"I think this is **{wheat_type}**(confidence: **{round(float(confidence),4)*100}%**)")
-    st.image(image, caption='Uploaded Image.', use_column_width=True)
+    # Initialize an empty string to store the text
+    text_extracted_from_pdf = ''
+
+    # Create a PdfReader object instead of PdfFileReader
+    pdf_reader = PyPDF2.PdfReader(uploaded_file)
+
+    for page_num in range(len(pdf_reader.pages)):
+        page = pdf_reader.pages[page_num]
+        text_extracted_from_pdf += page.extract_text()
+
+    
+    # Import the Python SDK
+    # Used to securely store your API key
+    genai.configure(api_key="AIzaSyBVQbVwbK8GvhwTOTBWsVDKlcUtMmPNKDM")
+    model = genai.GenerativeModel('gemini-pro')
+
+    # Name
+    prompt = text_extracted_from_pdf + "\n Give me the name of this profile bearer"
+    response = model.generate_content(prompt)
+    #print(response.text)
+    name = response.text  
+
+    # Email
+    prompt = text_extracted_from_pdf + "\n Give me the email of this profile bearer"
+    response = model.generate_content(prompt)
+    #print(response.text)
+    email = response.text
+
+    # Phone Number
+    prompt = text_extracted_from_pdf + "\n Give me the phone number of this profile bearer"
+    response = model.generate_content(prompt)
+    #print(response.text)
+    phoneNo = response.text
+
+    # College Name
+    prompt = text_extracted_from_pdf + "\n Give me the college name of this profile bearer"
+    response = model.generate_content(prompt)
+    #print(response.text)
+    collegeName = response.text
+
+    # skills
+    prompt = text_extracted_from_pdf + "\n Give me all the skill sets of this profile bearer as a whole"
+    response = model.generate_content(prompt)
+    #print(response.text)
+    skills = response.text
+
+
+
+    # Procesing the pdf file to insert into db
+    file_bytes = base64.b64encode(uploaded_file.read())
+
+    candidate_data = {
+    'Name': name,
+    'E-mail': email,
+    'Phone Number': phoneNo,
+    'College': collegeName,
+    'Skills': skills,
+    'resume': file_bytes
+    }
+
+    profileData.insert_one(candidate_data)
