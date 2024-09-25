@@ -1,7 +1,8 @@
-albumentations
-torch
-torchvision
-opencv-python-headless==4.5.3.56
+PyPDF2
+google.generativeai
+pymongo
+base64
+streamlit_pdf_viewer
 numpy
 streamlit
 
